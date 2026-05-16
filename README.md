@@ -125,6 +125,13 @@ These 7 scopes are required. There is **no `Copilot.Chat` scope** — the API ch
 | `ChannelMessage.Read.All` | Read Teams channel messages |
 | `ExternalItem.Read.All` | Read Microsoft Graph connectors data |
 
+## Connecting AI Agents
+
+This proxy works with any OpenAI-compatible client. See **[USAGE.md](./USAGE.md)** for wiring guides:
+
+- **Hermes Agent** — add as a `custom` or named `copilot365` provider in `~/.hermes/config.yaml`
+- **OpenClaw** — add as a custom `openai-completions` provider in `~/.openclaw/openclaw.json`
+
 ## Notes
 
 - **Streaming**: Not currently supported (Graph Copilot API does not provide SSE).
