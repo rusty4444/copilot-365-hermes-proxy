@@ -9,12 +9,13 @@ providers:
     default_model: copilot-chat
     transport: chat_completions
 
-# Also works as a generic "custom" provider:
-#   hermes -z "prompt" --provider custom --base-url http://127.0.0.1:8081/v1
+# Then use it:
+#   hermes -z "prompt" -p copilot365
+#   hermes chat -p copilot365
 
 # As a fallback provider (example):
 # fallback_providers:
-# - provider: custom
+# - provider: copilot365
 #   base_url: http://127.0.0.1:8081/v1
 #   model: copilot-chat
 #   api_key: no-key-required

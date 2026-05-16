@@ -7,9 +7,9 @@ to **Hermes Agent** and **OpenClaw** as a custom OpenAI-compatible model provide
 
 ## Hermes Agent
 
-### Option A: Persistent provider config
+### Prerequisite: Add provider to config
 
-Add to `~/.hermes/config.yaml`:
+Add this block to `~/.hermes/config.yaml`:
 
 ```yaml
 providers:
@@ -21,27 +21,22 @@ providers:
     transport: chat_completions
 ```
 
-Then use it:
+> **Note:** `--base-url` is not a CLI flag in this Hermes version — the provider
+> **must** be defined in config to use a non-default endpoint.
+
+### Use it
 
 ```bash
-hermes --provider copilot365 "Summarise my latest emails"
+# One-shot query (global -z flag):
+hermes -z "What's new in M365?" -p copilot365
+
+# Interactive chat session:
+hermes chat -p copilot365
 ```
 
-### Option B: Inline (no config change)
+### As a fallback provider
 
-```bash
-hermes -z "What's new in M365?" --provider custom --base-url http://127.0.0.1:8081/v1
-```
-
-Or with the `chat` subcommand:
-
-```bash
-hermes chat -m "What's new in M365?" --provider custom --base-url http://127.0.0.1:8081/v1
-```
-
-### Fallback provider
-
-If you want Copilot as a fallback when your primary model is down:
+If you want Copilot as a fallback when your primary model is down, add under `fallback_providers:` in config:
 
 ```yaml
 fallback_providers:
@@ -174,5 +169,5 @@ Before wiring either agent:
 |---------|-------|-----|
 | `401` from proxy | Token expired or missing | Re-run `python oauth.py device-code` |
 | `model not allowed` (OpenClaw) | Model missing from allowlist | Add `copilot365/copilot-chat` to `agents.defaults.models` |
-| `Provider not found` (Hermes) | Provider not in config | Use `--provider custom --base-url http://127.0.0.1:8081/v1` |
+| `Provider not found` (Hermes) | Provider not in config | Add `copilot365` under `providers:` in `~/.hermes/config.yaml` |
 | `404 /v1/models` | Old proxy version | Restart proxy with latest `server.py` |

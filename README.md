@@ -129,7 +129,7 @@ These 7 scopes are required. There is **no `Copilot.Chat` scope** — the API ch
 
 This proxy works with any OpenAI-compatible client. See **[USAGE.md](./USAGE.md)** for wiring guides:
 
-- **Hermes Agent** — add as a `custom` or named `copilot365` provider in `~/.hermes/config.yaml`
+- **Hermes Agent** — add as a `copilot365` provider in `~/.hermes/config.yaml`
 - **OpenClaw** — add as a custom `openai-completions` provider in `~/.openclaw/openclaw.json`
 
 ## Notes
