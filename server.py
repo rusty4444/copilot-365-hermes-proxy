@@ -1,17 +1,3 @@
-"""
-Microsoft 365 Copilot → OpenAI-compatible proxy server.
-
-Translates Hermes/OpenAI /v1/chat/completions requests into Microsoft Graph
-Copilot Chat API calls with automatic conversation lifecycle management.
-
-Architecture:
-  Hermes Agent → HTTP POST /v1/chat/completions
-       ↓
-  Copilot Proxy (localhost:8081)
-       ↓ OAuth2 Bearer + /beta/copilot/conversations/{id}/chat
-  Microsoft Graph API
-"""
-
 import json
 import time
 import os
@@ -19,11 +5,12 @@ import base64
 import requests
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from dotenv import load_dotenv
 
-# Load config from .env in same directory
+# Load .env from the same directory
 load_dotenv()
 
 GRAPH_VERSION = os.getenv("GRAPH_API_VERSION", "beta")
@@ -33,7 +20,6 @@ _user_conversations: dict[str, str] = {}
 
 
 def _get_user_oid(access_token: str) -> str:
-    """Extract the OID claim from the JWT access token for conversation keying."""
     try:
         parts = access_token.split(".")
         if len(parts) == 3:
@@ -48,7 +34,7 @@ def _get_user_oid(access_token: str) -> str:
     return "default"
 
 
-async def _ensure_authorized():
+def _load_token():
     """Load the cached OAuth2 token from disk."""
     cred_path = os.path.expanduser("~/.hermes/credentials/copilot365_token.json")
     try:
@@ -62,68 +48,9 @@ async def _ensure_authorized():
         raise HTTPException(500, detail=f"Token error: {e}") from e
 
 
-class Message(BaseModel):
-    role: str
-    content: str
-
-
-class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: List[Message]
-    stream: bool = False
-
-
-class CompletionChoice(BaseModel):
-    index: int
-    message: Message
-    finish_reason: str = "stop"
-
-
-class ChatCompletionResponse(BaseModel):
-    id: str
-    object: str = "chat.completion"
-    created: int
-    model: str
-    choices: List[CompletionChoice]
-
-
-app = FastAPI(title="Copilot365 Proxy")
-
-
-@app.get("/")
-def root():
-    return {"status": "ok", "service": "copilot365-proxy"}
-
-
-@app.get("/v1/models")
-def list_models():
-    """OpenAI-compatible model list endpoint."""
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": "copilot-chat",
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "microsoft-365",
-            }
-        ],
-    }
-
-
-@app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-async def chat_completions(request: ChatCompletionRequest):
-    access_token = await _ensure_authorized()
+def _call_copilot(access_token: str, user_message: str) -> dict:
+    """Call the Microsoft Graph Copilot API and return the response data."""
     user_oid = _get_user_oid(access_token)
-
-    # Extract the most recent user message
-    user_message = None
-    for msg in reversed(request.messages):
-        if msg.role == "user":
-            user_message = msg.content
-            break
-    if user_message is None:
-        raise HTTPException(400, detail="No user message found in request")
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -144,7 +71,7 @@ async def chat_completions(request: ChatCompletionRequest):
         conv = create.json()
         conversation_id = conv.get("id")
         if not conversation_id:
-            raise HTTPException(500, detail="No conversation ID from Copilot API")
+            raise HTTPException(500, detail="No conversation ID")
         _user_conversations[user_oid] = conversation_id
 
     # Send the chat message
@@ -161,7 +88,7 @@ async def chat_completions(request: ChatCompletionRequest):
         timeout=60,
     )
 
-    # Handle stale conversations (404/410/400 → recreate)
+    # Handle stale conversations (404/410/400 -> recreate)
     if chat_resp.status_code not in (200, 201):
         if chat_resp.status_code in (404, 410, 400):
             _user_conversations.pop(user_oid, None)
@@ -186,16 +113,18 @@ async def chat_completions(request: ChatCompletionRequest):
         if chat_resp.status_code not in (200, 201):
             raise HTTPException(chat_resp.status_code, detail=chat_resp.text)
 
-    # Map Graph response to OpenAI format
-    data = chat_resp.json()
-    msgs = data.get("messages", [])
-    assistant_content = msgs[-1].get("text", "(no response)") if msgs else "(no response)"
+    return chat_resp.json()
 
+
+def _build_openai_response(graph_data: dict, model: str) -> dict:
+    """Map Graph Copilot response to OpenAI chat.completion format."""
+    msgs = graph_data.get("messages", [])
+    assistant_content = msgs[-1].get("text", "(no response)") if msgs else "(no response)"
     return {
-        "id": data.get("id", ""),
+        "id": graph_data.get("id", ""),
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": request.model,
+        "model": model,
         "choices": [
             {
                 "index": 0,
@@ -204,6 +133,126 @@ async def chat_completions(request: ChatCompletionRequest):
             }
         ],
     }
+
+
+class Message(BaseModel):
+    role: str
+    content: str
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[Message]
+    stream: bool = False
+
+
+app = FastAPI(title="Copilot365 Proxy")
+
+
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "copilot365-proxy"}
+
+
+@app.get("/v1/models")
+def list_models():
+    """OpenAI-compatible model list endpoint — required by Hermes for provider init."""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "copilot-chat",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "microsoft-365",
+            }
+        ],
+    }
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest):
+    access_token = _load_token()
+
+    # Extract the last user message
+    user_message = None
+    for msg in reversed(request.messages):
+        if msg.role == "user":
+            user_message = msg.content
+            break
+    if user_message is None:
+        raise HTTPException(400, detail="No user message")
+
+    if request.stream:
+        return _handle_streaming(access_token, user_message, request.model)
+    else:
+        return _handle_non_streaming(access_token, user_message, request.model)
+
+
+def _handle_non_streaming(access_token: str, user_message: str, model: str):
+    """Non-streaming response — return full JSON."""
+    graph_data = _call_copilot(access_token, user_message)
+    return _build_openai_response(graph_data, model)
+
+
+def _handle_streaming(access_token: str, user_message: str, model: str):
+    """Streaming response — return SSE chunks.
+
+    The Graph Copilot API does not support streaming, so we fake it by
+    sending the full response as a single content chunk plus a finish chunk.
+    Most AI agent frameworks (Hermes, OpenClaw, etc.) use streaming by default,
+    so this is required for compatibility.
+    """
+    graph_data = _call_copilot(access_token, user_message)
+    response_data = _build_openai_response(graph_data, model)
+
+    response_id = response_data["id"]
+    created = response_data["created"]
+    content = response_data["choices"][0]["message"]["content"]
+
+    async def generate():
+        # Content chunk
+        chunk = {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": content},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(chunk)}\n\n"
+
+        # Final chunk with finish_reason
+        finish_chunk = {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        yield f"data: {json.dumps(finish_chunk)}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 if __name__ == "__main__":

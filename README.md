@@ -134,7 +134,7 @@ This proxy works with any OpenAI-compatible client. See **[USAGE.md](./USAGE.md)
 
 ## Notes
 
-- **Streaming**: Not currently supported (Graph Copilot API does not provide SSE).
+- **Streaming**: Supported via fake SSE streaming — the full Graph response is delivered as a single content chunk. Required because most AI agents (Hermes, etc.) default to streaming mode.
 - **Conversation state**: Kept in memory — restarting the proxy starts a fresh conversation.
 - **Token cache**: Stored at `~/.hermes/credentials/copilot365_token.json` with auto-refresh.
 - **Port**: Defaults to `8081`; configure via `COPILOT_PROXY_PORT` in `.env`.
