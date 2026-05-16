@@ -15,8 +15,11 @@ load_dotenv()
 
 GRAPH_VERSION = os.getenv("GRAPH_API_VERSION", "beta")
 
-# In-memory conversation store: user OID -> conversation_id
-_user_conversations: dict[str, str] = {}
+# In-memory conversation store: user OID -> {"conversation_id": str, "turn_count": int}
+_user_conversations: dict[str, dict] = {}
+
+# Max turns before rotating to a fresh conversation (avoids token-limit issues)
+MAX_TURNS_PER_CONVERSATION = int(os.getenv("COPILOT_MAX_TURNS", "50"))
 
 
 def _get_user_oid(access_token: str) -> str:
@@ -48,6 +51,27 @@ def _load_token():
         raise HTTPException(500, detail=f"Token error: {e}") from e
 
 
+def _create_conversation(access_token: str) -> dict:
+    """Create a new Copilot conversation and return tracking data."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    create = requests.post(
+        f"https://graph.microsoft.com/{GRAPH_VERSION}/copilot/conversations",
+        headers=headers,
+        json={},
+        timeout=30,
+    )
+    if create.status_code not in (200, 201):
+        raise HTTPException(create.status_code, detail=create.text)
+    conv = create.json()
+    conversation_id = conv.get("id")
+    if not conversation_id:
+        raise HTTPException(500, detail="No conversation ID")
+    return {"conversation_id": conversation_id, "turn_count": 0, "user_oid": _get_user_oid(access_token)}
+
+
 def _call_copilot(access_token: str, user_message: str) -> dict:
     """Call the Microsoft Graph Copilot API and return the response data."""
     user_oid = _get_user_oid(access_token)
@@ -58,21 +82,18 @@ def _call_copilot(access_token: str, user_message: str) -> dict:
     }
 
     # Get or create a conversation
-    conversation_id = _user_conversations.get(user_oid)
-    if not conversation_id:
-        create = requests.post(
-            f"https://graph.microsoft.com/{GRAPH_VERSION}/copilot/conversations",
-            headers=headers,
-            json={},
-            timeout=30,
-        )
-        if create.status_code not in (200, 201):
-            raise HTTPException(create.status_code, detail=create.text)
-        conv = create.json()
-        conversation_id = conv.get("id")
-        if not conversation_id:
-            raise HTTPException(500, detail="No conversation ID")
-        _user_conversations[user_oid] = conversation_id
+    conv_data = _user_conversations.get(user_oid)
+    if not conv_data:
+        conv_data = _create_conversation(access_token)
+        conversation_id = conv_data["conversation_id"]
+        _user_conversations[user_oid] = conv_data
+    else:
+        conversation_id = conv_data["conversation_id"]
+        # Rotate if too many turns (prevents hitting Copilot's context window limit)
+        if conv_data["turn_count"] >= MAX_TURNS_PER_CONVERSATION:
+            conv_data = _create_conversation(access_token)
+            conversation_id = conv_data["conversation_id"]
+            _user_conversations[user_oid] = conv_data
 
     # Send the chat message
     tz = os.getenv("USER_TIMEZONE", "UTC")
@@ -92,26 +113,22 @@ def _call_copilot(access_token: str, user_message: str) -> dict:
     if chat_resp.status_code not in (200, 201):
         if chat_resp.status_code in (404, 410, 400):
             _user_conversations.pop(user_oid, None)
-            create2 = requests.post(
-                f"https://graph.microsoft.com/{GRAPH_VERSION}/copilot/conversations",
+            conv_data2 = _create_conversation(access_token)
+            conversation_id = conv_data2["conversation_id"]
+            _user_conversations[user_oid] = conv_data2
+            chat_resp = requests.post(
+                f"https://graph.microsoft.com/{GRAPH_VERSION}/copilot/conversations/{conversation_id}/chat",
                 headers=headers,
-                json={},
-                timeout=30,
+                json=chat_payload,
+                timeout=60,
             )
-            if create2.status_code in (200, 201):
-                conv2 = create2.json()
-                new_id = conv2.get("id")
-                if new_id:
-                    _user_conversations[user_oid] = new_id
-                    conversation_id = new_id
-                    chat_resp = requests.post(
-                        f"https://graph.microsoft.com/{GRAPH_VERSION}/copilot/conversations/{conversation_id}/chat",
-                        headers=headers,
-                        json=chat_payload,
-                        timeout=60,
-                    )
         if chat_resp.status_code not in (200, 201):
             raise HTTPException(chat_resp.status_code, detail=chat_resp.text)
+
+    # Increment turn counter
+    conv_entry = _user_conversations.get(user_oid)
+    if conv_entry and conv_entry.get("conversation_id") == conversation_id:
+        conv_entry["turn_count"] = conv_entry.get("turn_count", 0) + 1
 
     return chat_resp.json()
 

@@ -1,5 +1,9 @@
 # Microsoft 365 Copilot → OpenAI Proxy
 
+<p align="center">
+  <img src="logo.jpg" alt="Copilot 365 Hermes Proxy" width="300">
+</p>
+
 A local FastAPI proxy that translates **OpenAI-compatible `/v1/chat/completions`** requests into **Microsoft Graph Copilot Chat API** calls. Designed for use with AI agent frameworks (like Hermes Agent) that support custom OpenAI-format providers.
 
 ## Architecture
@@ -19,6 +23,26 @@ Microsoft Graph Copilot API
     v
 OpenAI-compatible JSON response
 ```
+
+## Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `COPILOT_PROXY_HOST` | `127.0.0.1` | Bind address |
+| `COPILOT_PROXY_PORT` | `8081` | Listen port |
+| `GRAPH_API_VERSION` | `beta` | Graph API version |
+| `COPILOT_MAX_TURNS` | `50` | Max turns per conversation before rotating (avoids context-window exhaustion) |
+| `USER_TIMEZONE` | `UTC` | Timezone hint sent to Copilot |
+
+## Context Window Management
+
+Microsoft 365 Copilot accumulates conversation history server-side. Over long sessions this can hit the model's context window limit, causing degraded responses or errors. The proxy:
+
+- **Tracks turn count** per conversation per user
+- **Auto-rotates** to a fresh conversation after `COPILOT_MAX_TURNS` (default: 50)
+- **Recreates stale conversations** automatically on 404/410/400 errors
+
+Set `COPILOT_MAX_TURNS` in your `.env` to control rotation frequency. Lower values reduce token usage but lose conversation history; higher values preserve context longer but risk token-limit errors.
 
 ## Prerequisites
 
