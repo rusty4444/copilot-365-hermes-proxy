@@ -1,5 +1,7 @@
 # Microsoft 365 Copilot → OpenAI Proxy
 
+> **⚠️ Proof of Concept** — This is a functional prototype, not a production-ready integration. Microsoft 365 Copilot's Graph API has undocumented context window limits (~16K-32K effective tokens) and enforces usage restrictions (rate limits, content filtering, auth scoping). The proxy handles conversation rotation to mitigate context limits (see [Context Window Management](#context-window-management)), but reliability in long-running or high-throughput scenarios is not guaranteed. Use at your own risk.
+
 <p align="center">
   <img src="logo.jpg" alt="Copilot 365 Hermes Proxy" width="300">
 </p>
