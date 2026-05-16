@@ -30,7 +30,13 @@ hermes --provider copilot365 "Summarise my latest emails"
 ### Option B: Inline (no config change)
 
 ```bash
-hermes --provider custom --base-url http://127.0.0.1:8081/v1 "What's new in M365?"
+hermes -z "What's new in M365?" --provider custom --base-url http://127.0.0.1:8081/v1
+```
+
+Or with the `chat` subcommand:
+
+```bash
+hermes chat -m "What's new in M365?" --provider custom --base-url http://127.0.0.1:8081/v1
 ```
 
 ### Fallback provider

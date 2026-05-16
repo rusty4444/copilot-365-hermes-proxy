@@ -10,7 +10,7 @@ providers:
     transport: chat_completions
 
 # Also works as a generic "custom" provider:
-#   hermes --provider custom --base-url http://127.0.0.1:8081/v1
+#   hermes -z "prompt" --provider custom --base-url http://127.0.0.1:8081/v1
 
 # As a fallback provider (example):
 # fallback_providers:
