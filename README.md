@@ -1,4 +1,11 @@
 # Microsoft 365 Copilot → OpenAI Proxy
+<p align="center">
+  <a href="https://buymeacoffee.com/rusty4" target="_blank">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50">
+  </a>
+</p>
+
+
 
 > **⚠️ Proof of Concept** — This is a functional prototype, not a production-ready integration. Microsoft 365 Copilot's Graph API has undocumented context window limits (~16K-32K effective tokens) and enforces usage restrictions (rate limits, content filtering, auth scoping). The proxy handles conversation rotation to mitigate context limits (see [Context Window Management](#context-window-management)), but reliability in long-running or high-throughput scenarios is not guaranteed. Use at your own risk.
 
