@@ -187,17 +187,59 @@ def list_models():
     }
 
 
+def _build_copilot_message(messages: List[Message]) -> str:
+    """Build the message to send to Copilot, preserving system instructions.
+
+    Copilot has no native system-message concept — it only receives a single
+    user text. To preserve Hermes Agent's identity (and avoid Copilot thinking
+    it *is* Copilot), we prepend system messages as an instruction block and
+    include recent conversation history for context continuity.
+    """
+    # Collect system messages (Hermes identity, tool definitions, etc.)
+    system_lines = []
+    for msg in messages:
+        if msg.role == "system":
+            system_lines.append(msg.content)
+
+    # Collect recent conversation history (last 6 turns = 12 messages)
+    history_lines = []
+    history_msgs = [m for m in messages if m.role in ("user", "assistant")]
+    recent = history_msgs[:-1]  # exclude the last user message (it's the current prompt)
+    if len(recent) > 12:
+        recent = recent[-12:]
+    for msg in recent:
+        role_label = msg.role.capitalize()
+        history_lines.append(f"{role_label}: {msg.content}")
+
+    # Get the current user message (last one)
+    user_message = None
+    for msg in reversed(messages):
+        if msg.role == "user":
+            user_message = msg.content
+            break
+
+    # Build the unified message
+    parts = []
+    if system_lines:
+        parts.append("=== SYSTEM INSTRUCTIONS (you are acting as this agent) ===")
+        parts.append("\n\n".join(system_lines))
+    if history_lines:
+        parts.append("=== RECENT CONVERSATION ===")
+        parts.append("\n".join(history_lines))
+    if user_message:
+        if parts:
+            parts.append("=== CURRENT REQUEST ===")
+        parts.append(user_message)
+
+    return "\n\n".join(parts)
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     access_token = _load_token()
 
-    # Extract the last user message
-    user_message = None
-    for msg in reversed(request.messages):
-        if msg.role == "user":
-            user_message = msg.content
-            break
-    if user_message is None:
+    user_message = _build_copilot_message(request.messages)
+    if not user_message or not user_message.strip():
         raise HTTPException(400, detail="No user message")
 
     if request.stream:
