@@ -72,8 +72,13 @@ def _create_conversation(access_token: str) -> dict:
     return {"conversation_id": conversation_id, "turn_count": 0, "user_oid": _get_user_oid(access_token)}
 
 
-def _call_copilot(access_token: str, user_message: str) -> dict:
-    """Call the Microsoft Graph Copilot API and return the response data."""
+def _call_copilot(access_token: str, user_message: str, system_messages: Optional[list] = None) -> dict:
+    """Call the Microsoft Graph Copilot API and return the response data.
+
+    On the first turn of a new conversation, system messages from the original
+    request are prepended so Copilot inherits the agent's persona (Hermes,
+    OpenClaw, etc.) instead of defaulting to its built-in Copilot identity.
+    """
     user_oid = _get_user_oid(access_token)
 
     headers = {
@@ -83,6 +88,7 @@ def _call_copilot(access_token: str, user_message: str) -> dict:
 
     # Get or create a conversation
     conv_data = _user_conversations.get(user_oid)
+    is_new_conversation = not conv_data
     if not conv_data:
         conv_data = _create_conversation(access_token)
         conversation_id = conv_data["conversation_id"]
@@ -94,6 +100,19 @@ def _call_copilot(access_token: str, user_message: str) -> dict:
             conv_data = _create_conversation(access_token)
             conversation_id = conv_data["conversation_id"]
             _user_conversations[user_oid] = conv_data
+            is_new_conversation = True
+
+    # On a new conversation, prepend system messages so Copilot knows which
+    # agent persona it's acting as (Hermes, OpenClaw, etc.) — without this it
+    # responds with its built-in Microsoft Copilot identity.
+    if is_new_conversation and system_messages:
+        system_texts = []
+        for msg in system_messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                system_texts.append(msg.get("content", ""))
+        if system_texts:
+            system_prefix = "\n\n".join(system_texts)
+            user_message = f"{system_prefix}\n\n---\n\n{user_message}"
 
     # Send the chat message
     tz = os.getenv("USER_TIMEZONE", "UTC")
@@ -116,6 +135,24 @@ def _call_copilot(access_token: str, user_message: str) -> dict:
             conv_data2 = _create_conversation(access_token)
             conversation_id = conv_data2["conversation_id"]
             _user_conversations[user_oid] = conv_data2
+
+            # Re-prepend system messages for the recreated conversation, since
+            # the original user_message may not have had them if the original
+            # conversation was not new (stale recovery path).
+            retry_message = user_message
+            if system_messages:
+                system_texts = []
+                for msg in system_messages:
+                    if isinstance(msg, dict) and msg.get("role") == "system":
+                        system_texts.append(msg.get("content", ""))
+                if system_texts and not user_message.startswith(system_texts[0][:50] if system_texts[0] else ""):
+                    system_prefix = "\n\n".join(system_texts)
+                    retry_message = f"{system_prefix}\n\n---\n\n{user_message}"
+
+            chat_payload = {
+                "message": {"text": retry_message},
+                "locationHint": {"timeZone": tz},
+            }
             chat_resp = requests.post(
                 f"https://graph.microsoft.com/{GRAPH_VERSION}/copilot/conversations/{conversation_id}/chat",
                 headers=headers,
@@ -200,19 +237,23 @@ async def chat_completions(request: ChatCompletionRequest):
     if user_message is None:
         raise HTTPException(400, detail="No user message")
 
+    # Pass the full messages list so system prompts reach Copilot on new
+    # conversations — this prevents Copilot from defaulting to its own identity.
+    messages_dicts = [msg.model_dump() for msg in request.messages]
+
     if request.stream:
-        return _handle_streaming(access_token, user_message, request.model)
+        return _handle_streaming(access_token, user_message, request.model, messages_dicts)
     else:
-        return _handle_non_streaming(access_token, user_message, request.model)
+        return _handle_non_streaming(access_token, user_message, request.model, messages_dicts)
 
 
-def _handle_non_streaming(access_token: str, user_message: str, model: str):
+def _handle_non_streaming(access_token: str, user_message: str, model: str, messages: Optional[list] = None):
     """Non-streaming response — return full JSON."""
-    graph_data = _call_copilot(access_token, user_message)
+    graph_data = _call_copilot(access_token, user_message, messages)
     return _build_openai_response(graph_data, model)
 
 
-def _handle_streaming(access_token: str, user_message: str, model: str):
+def _handle_streaming(access_token: str, user_message: str, model: str, messages: Optional[list] = None):
     """Streaming response — return SSE chunks.
 
     The Graph Copilot API does not support streaming, so we fake it by
@@ -220,7 +261,7 @@ def _handle_streaming(access_token: str, user_message: str, model: str):
     Most AI agent frameworks (Hermes, OpenClaw, etc.) use streaming by default,
     so this is required for compatibility.
     """
-    graph_data = _call_copilot(access_token, user_message)
+    graph_data = _call_copilot(access_token, user_message, messages)
     response_data = _build_openai_response(graph_data, model)
 
     response_id = response_data["id"]
