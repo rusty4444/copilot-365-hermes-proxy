@@ -41,6 +41,8 @@ OpenAI-compatible JSON response
 | `COPILOT_PROXY_PORT` | `8081` | Listen port |
 | `GRAPH_API_VERSION` | `beta` | Graph API version |
 | `COPILOT_MAX_TURNS` | `50` | Max turns per conversation before rotating (avoids context-window exhaustion) |
+| `COPILOT_HISTORY_TURNS` | `4` | Recent user/assistant turns re-sent with each request (bounded to avoid Copilot context limits). Set `0` to disable |
+| `COPILOT_AGENT_IDENTITY` | *(Hermes Agent identity block)* | Identity/instruction text prepended to every request. Microsoft's backend applies its own Copilot system prompt, so this keeps the model acting as your agent instead of as Copilot. Override to match another agent framework |
 | `USER_TIMEZONE` | `UTC` | Timezone hint sent to Copilot |
 
 ## Context Window Management
@@ -168,6 +170,7 @@ This proxy works with any OpenAI-compatible client. See **[USAGE.md](./USAGE.md)
 ## Notes
 
 - **Streaming**: Supported via fake SSE streaming — the full Graph response is delivered as a single content chunk. Required because most AI agents (Hermes, etc.) default to streaming mode.
+- **Agent identity**: Microsoft's backend applies its own Copilot system prompt, so the proxy prepends an identity block plus your agent's system prompt and recent history to each request. See `COPILOT_AGENT_IDENTITY` and `COPILOT_HISTORY_TURNS`.
 - **Conversation state**: Kept in memory — restarting the proxy starts a fresh conversation.
 - **Token cache**: Stored at `~/.hermes/credentials/copilot365_token.json` with auto-refresh.
 - **Port**: Defaults to `8081`; configure via `COPILOT_PROXY_PORT` in `.env`.
