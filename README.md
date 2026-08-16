@@ -42,6 +42,23 @@ OpenAI-compatible JSON response
 | `GRAPH_API_VERSION` | `beta` | Graph API version |
 | `COPILOT_MAX_TURNS` | `50` | Max turns per conversation before rotating (avoids context-window exhaustion) |
 | `USER_TIMEZONE` | `UTC` | Timezone hint sent to Copilot |
+| `COPILOT_FORWARD_SYSTEM_PROMPT` | `1` | Forward the agent's `system`/`developer` messages to Copilot so it adopts the host agent's persona (`0` to disable) |
+
+## Agent Persona (System Prompt Forwarding)
+
+The Graph Copilot chat API has no `system` role. By default the proxy
+forwards any `system` / `developer` messages from the incoming
+`/v1/chat/completions` request as text on the first turn of each Copilot
+conversation (and re-sends them if they change mid-conversation). Without
+this, Copilot answers in its own "I am Microsoft Copilot" persona and refuses
+agent-style tasks instead of acting as your host agent (Hermes Agent,
+OpenClaw, etc.).
+
+Note: the Graph API does not support tool calls, so the model cannot
+literally execute tools. It can, however, follow the agent's instructions,
+plan, and produce the right outputs in the agent's voice.
+
+Set `COPILOT_FORWARD_SYSTEM_PROMPT=0` to disable this behaviour.
 
 ## Context Window Management
 

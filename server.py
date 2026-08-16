@@ -2,6 +2,7 @@ import json
 import time
 import os
 import base64
+import hashlib
 import requests
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -20,6 +21,11 @@ _user_conversations: dict[str, dict] = {}
 
 # Max turns before rotating to a fresh conversation (avoids token-limit issues)
 MAX_TURNS_PER_CONVERSATION = int(os.getenv("COPILOT_MAX_TURNS", "50"))
+
+# Forward the agent's system prompt to Copilot so the model knows it is
+# acting as the host agent (e.g. Hermes Agent) rather than as Copilot itself.
+# Disable with COPILOT_FORWARD_SYSTEM_PROMPT=0.
+FORWARD_SYSTEM_PROMPT = os.getenv("COPILOT_FORWARD_SYSTEM_PROMPT", "1") != "0"
 
 
 def _get_user_oid(access_token: str) -> str:
@@ -72,7 +78,23 @@ def _create_conversation(access_token: str) -> dict:
     return {"conversation_id": conversation_id, "turn_count": 0, "user_oid": _get_user_oid(access_token)}
 
 
-def _call_copilot(access_token: str, user_message: str) -> dict:
+def _extract_system_prompt(messages) -> str:
+    """Join all system/developer messages from an OpenAI-format request.
+
+    The Graph Copilot chat API has no system role, so we forward the host
+    agent's system prompt as text instead of dropping it. Without it, the
+    model answers with its native Copilot persona instead of the agent's.
+    """
+    parts = []
+    for msg in messages:
+        if getattr(msg, "role", None) in ("system", "developer"):
+            content = (getattr(msg, "content", "") or "").strip()
+            if content:
+                parts.append(content)
+    return "\n\n".join(parts)
+
+
+def _call_copilot(access_token: str, user_message: str, system_prompt: str = "") -> dict:
     """Call the Microsoft Graph Copilot API and return the response data."""
     user_oid = _get_user_oid(access_token)
 
@@ -81,10 +103,13 @@ def _call_copilot(access_token: str, user_message: str) -> dict:
         "Content-Type": "application/json",
     }
 
+    system_hash = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest() if system_prompt else ""
+
     # Get or create a conversation
     conv_data = _user_conversations.get(user_oid)
     if not conv_data:
         conv_data = _create_conversation(access_token)
+        conv_data["last_system_hash"] = ""
         conversation_id = conv_data["conversation_id"]
         _user_conversations[user_oid] = conv_data
     else:
@@ -92,13 +117,26 @@ def _call_copilot(access_token: str, user_message: str) -> dict:
         # Rotate if too many turns (prevents hitting Copilot's context window limit)
         if conv_data["turn_count"] >= MAX_TURNS_PER_CONVERSATION:
             conv_data = _create_conversation(access_token)
+            conv_data["last_system_hash"] = ""
             conversation_id = conv_data["conversation_id"]
             _user_conversations[user_oid] = conv_data
+
+    # Send the system prompt on the first turn of a conversation (or when it
+    # changed). Copilot keeps server-side history, so it persists afterwards.
+    outgoing_text = user_message
+    if FORWARD_SYSTEM_PROMPT and system_prompt and conv_data.get("last_system_hash") != system_hash:
+        outgoing_text = (
+            f"[System context from your host application]\n"
+            f"{system_prompt}\n"
+            f"[/System context]\n\n"
+            f"User message:\n{user_message}"
+        )
+        conv_data["last_system_hash"] = system_hash
 
     # Send the chat message
     tz = os.getenv("USER_TIMEZONE", "UTC")
     chat_payload = {
-        "message": {"text": user_message},
+        "message": {"text": outgoing_text},
         "locationHint": {"timeZone": tz},
     }
 
@@ -191,6 +229,10 @@ def list_models():
 async def chat_completions(request: ChatCompletionRequest):
     access_token = _load_token()
 
+    # Forward the host agent's system prompt so Copilot adopts the agent
+    # persona (Hermes Agent, OpenClaw, etc.) instead of its own.
+    system_prompt = _extract_system_prompt(request.messages) if FORWARD_SYSTEM_PROMPT else ""
+
     # Extract the last user message
     user_message = None
     for msg in reversed(request.messages):
@@ -201,18 +243,18 @@ async def chat_completions(request: ChatCompletionRequest):
         raise HTTPException(400, detail="No user message")
 
     if request.stream:
-        return _handle_streaming(access_token, user_message, request.model)
+        return _handle_streaming(access_token, user_message, request.model, system_prompt)
     else:
-        return _handle_non_streaming(access_token, user_message, request.model)
+        return _handle_non_streaming(access_token, user_message, request.model, system_prompt)
 
 
-def _handle_non_streaming(access_token: str, user_message: str, model: str):
+def _handle_non_streaming(access_token: str, user_message: str, model: str, system_prompt: str = ""):
     """Non-streaming response — return full JSON."""
-    graph_data = _call_copilot(access_token, user_message)
+    graph_data = _call_copilot(access_token, user_message, system_prompt)
     return _build_openai_response(graph_data, model)
 
 
-def _handle_streaming(access_token: str, user_message: str, model: str):
+def _handle_streaming(access_token: str, user_message: str, model: str, system_prompt: str = ""):
     """Streaming response — return SSE chunks.
 
     The Graph Copilot API does not support streaming, so we fake it by
@@ -220,7 +262,7 @@ def _handle_streaming(access_token: str, user_message: str, model: str):
     Most AI agent frameworks (Hermes, OpenClaw, etc.) use streaming by default,
     so this is required for compatibility.
     """
-    graph_data = _call_copilot(access_token, user_message)
+    graph_data = _call_copilot(access_token, user_message, system_prompt)
     response_data = _build_openai_response(graph_data, model)
 
     response_id = response_data["id"]
