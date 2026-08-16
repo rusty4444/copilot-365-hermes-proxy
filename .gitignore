@@ -21,3 +21,4 @@ copilot365_token.json
 *.swp
 *.swo
 .DS_Store
+.venv/
