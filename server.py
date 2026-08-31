@@ -153,6 +153,22 @@ def _call_copilot(access_token: str, user_message: str, system_prompt: str = "")
             _user_conversations.pop(user_oid, None)
             conv_data2 = _create_conversation(access_token)
             conversation_id = conv_data2["conversation_id"]
+            # The rebuilt conversation is brand-new: its first message must
+            # carry the system context even when the current turn's payload
+            # was computed as a plain user message (hash matched before the
+            # stale reply came back).
+            if FORWARD_SYSTEM_PROMPT and system_prompt and "[System context" not in outgoing_text:
+                outgoing_text = (
+                    f"[System context from your host application]\n"
+                    f"{system_prompt}\n"
+                    f"[/System context]\n\n"
+                    f"User message:\n{user_message}"
+                )
+                chat_payload = {
+                    "message": {"text": outgoing_text},
+                    "locationHint": {"timeZone": tz},
+                }
+            conv_data2["last_system_hash"] = system_hash
             _user_conversations[user_oid] = conv_data2
             chat_resp = requests.post(
                 f"https://graph.microsoft.com/{GRAPH_VERSION}/copilot/conversations/{conversation_id}/chat",

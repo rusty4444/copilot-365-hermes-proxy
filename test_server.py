@@ -87,4 +87,55 @@ with mock.patch("requests.post", side_effect=_fake_post):
     assert r4.status_code == 200, r4.text
     assert "You are OpenClaw." in captured_payloads[0]["message"]["text"]
 
+    # Stale-conversation recovery: when Copilot 410s an existing conversation
+    # mid-session, the rebuilt conversation's first message must still carry
+    # the system context even though the current turn's payload was computed
+    # as a plain user message (hash matched before the stale reply).
+    server._user_conversations.clear()
+    captured_payloads.clear()
+    stale_payloads = []
+    stale_calls = {"create_count": 0, "chat_counts": {}}
+
+    def _fake_post_stale(url, **kwargs):
+        if url.endswith("/copilot/conversations"):
+            stale_calls["create_count"] += 1
+            return types.SimpleNamespace(
+                status_code=201,
+                json=lambda: {"id": f"conv-{stale_calls['create_count']}"},
+                text="ok",
+            )
+        if "/chat" in url:
+            stale_payloads.append(kwargs.get("json"))
+            conv_id = url.split("/copilot/conversations/")[1].split("/chat")[0]
+            stale_calls["chat_counts"][conv_id] = stale_calls["chat_counts"].get(conv_id, 0) + 1
+            # conv-1 goes stale on its second chat call (mid-conversation 410)
+            if conv_id == "conv-1" and stale_calls["chat_counts"][conv_id] == 2:
+                return types.SimpleNamespace(status_code=410, json=lambda: {}, text="gone")
+            return types.SimpleNamespace(status_code=200, json=lambda: fake_responses["chat"], text="ok")
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with mock.patch("requests.post", side_effect=_fake_post_stale):
+        sys_prompt2 = "You are Hermes Agent. Act as Hermes."
+        for user_text in ("first", "second", "third"):
+            r = client.post("/v1/chat/completions", json={
+                "model": "copilot-chat",
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": sys_prompt2},
+                    {"role": "user", "content": user_text},
+                ],
+            })
+            assert r.status_code == 200, r.text
+
+    # Call 1: fresh conv-1, system context prefixed.
+    assert "You are Hermes Agent." in stale_payloads[0]["message"]["text"]
+    # Call 2: conv-1's second chat 410s -> rebuilt conv-2's first message must
+    # still carry the system context even though the turn started out plain.
+    assert stale_payloads[1]["message"]["text"] == "second"
+    rebuilt = stale_payloads[2]["message"]["text"]
+    assert "You are Hermes Agent." in rebuilt, "persona dropped on rebuilt conversation"
+    assert "second" in rebuilt
+    # Call 3: hash committed on the rebuilt conversation -> plain again.
+    assert stale_payloads[3]["message"]["text"] == "third"
+
 print("ALL TESTS PASSED")
